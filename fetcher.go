@@ -7,17 +7,18 @@ package main
  *	fetcher := SimpleFetcher{retries: 1, baseUrl: "https://example.com"}
  *	fetcher.Fetch("https://example.com")
  * TODO: log errors
+ * TODO: remove self-references
  */
 
 import (
 	"fmt"
 	"golang.org/x/net/html"
 	"io"
-	"net"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
+	"sync"
 )
 
 type Fetcher interface {
@@ -37,31 +38,28 @@ func (fetcher SimpleFetcher) Fetch(url string) ([]string, error) {
 	return nil, fmt.Errorf("not found: %s", url)
 }
 
-// a global client for keep-alive
-var client *http.Client
-
 func (fetcher SimpleFetcher) start(url string, retries int) ([]string, bool) {
 
 	var response *http.Response
 	var err error
-	t := &http.Transport{
-		Dial: (&net.Dialer{
-			KeepAlive: 30 * time.Second,
-		}).Dial,
-		TLSHandshakeTimeout: 60 * time.Second,
-	}
-	client = &http.Client{
-		Transport: t,
-	}
+
 	for retries >= 0 {
-		response, err = client.Get(url)
+
+		response, err = http.Get(url)
 		if err == nil {
 			break
 		}
-		fmt.Println(err)
+
 		retries--
 	}
+
+	if err != nil && retries < 0 {
+		fmt.Println(err)
+		return nil, false
+	}
+
 	defer response.Body.Close()
+	defer io.Copy(ioutil.Discard, response.Body)
 	if validUrls, ok := fetcher.parsePage(response.Body); ok {
 		return validUrls, true
 	}
@@ -72,6 +70,7 @@ func (fetcher SimpleFetcher) start(url string, retries int) ([]string, bool) {
 func (fetcher SimpleFetcher) parsePage(body io.Reader) ([]string, bool) {
 
 	var validUrls []string
+	var urlSet = &stringSet{set: make(map[string]bool)}
 
 	t := html.NewTokenizer(body)
 	for {
@@ -88,10 +87,12 @@ func (fetcher SimpleFetcher) parsePage(body io.Reader) ([]string, bool) {
 			token := t.Token()
 			if token.DataAtom.String() == "a" {
 				if url, ok := fetcher.getHrefAttr(token); ok {
-					validUrls = append(validUrls, url)
+					if !urlSet.contains(url) {
+						validUrls = append(validUrls, url)
+						urlSet.add(url)
+					}
 				}
 			}
-
 		}
 	}
 	return nil, false
@@ -109,8 +110,7 @@ func (fetcher SimpleFetcher) getHrefAttr(token html.Token) (string, bool) {
 }
 
 func (fetcher SimpleFetcher) cleanUpUrl(link string) (string, bool) {
-	// remove self-loops
-	if link == "/" || strings.Contains(link, "#") {
+	if link == "/" || strings.HasPrefix(link, "#") {
 		return "", false
 	}
 	u, err := url.Parse(link)
@@ -125,5 +125,23 @@ func (fetcher SimpleFetcher) cleanUpUrl(link string) (string, bool) {
 	if base.Host != newLink.Host {
 		return "", false
 	}
-	return newLink.String(), true
+	return strings.TrimSuffix(newLink.String(), "/"), true
+}
+
+type stringSet struct {
+	set map[string]bool
+	sync.RWMutex
+}
+
+func (set *stringSet) add(value string) {
+	set.Lock()
+	set.set[value] = true
+	set.Unlock()
+}
+
+func (set *stringSet) contains(value string) bool {
+	set.RLock()
+	defer set.RUnlock()
+	_, found := set.set[value]
+	return found
 }
