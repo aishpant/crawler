@@ -1,12 +1,24 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
+	"github.com/rs/zerolog/log"
+	"io/ioutil"
 	"strings"
 	"sync"
+	"time"
 )
+
+/*
+ * This web crawler outputs a site map of crawled websites
+ * Usage:
+ *	./crawler -url https://golang.org/ -depth 4 -output out.txt
+ * The sitemap is written to out.txt.
+ *
+ * This web crawler is inspired by the Web Crawler exercise from the gotour
+ * https://tour.golang.org/concurrency/10
+ */
 
 func Crawl(url string, depth int, fetcher Fetcher) {
 
@@ -23,26 +35,27 @@ func Crawl(url string, depth int, fetcher Fetcher) {
 	urlState.setState(url, LOADING)
 	urlState.Unlock()
 
-	// crawl url
-	foundUrls, err := fetcher.Fetch(url)
+	foundUrls, err := fetcher.Fetch(url, HttpGetClient{})
 
 	urlState.Lock()
 	if err != nil {
-		// TODO: log this error
+		log.Error().Err(err).Msg("Failed to fetch url")
 		urlState.setState(url, ERROR)
 		urlState.Unlock()
 		return
 	}
+
 	urlState.setState(url, LOADED)
 	urlState.Unlock()
 
 	collectedUrls.add(url, foundUrls)
 
-	ch := make(chan bool)
+	// make a channel per level
+	ch := make(chan int)
 	for _, u := range foundUrls {
 		go func(u string) {
 			Crawl(u, depth-1, fetcher)
-			ch <- true
+			ch <- 1
 		}(u)
 	}
 
@@ -60,7 +73,6 @@ type urlCache struct {
 
 func (cache *urlCache) add(url string, urls []string) {
 	cache.Lock()
-	// Lock so only one goroutine at a time can access the map
 	cache.res[url] = urls
 	cache.Unlock()
 }
@@ -105,53 +117,53 @@ func (urlState *uState) setState(url string, state state) {
 func main() {
 
 	var (
-		baseUrl  = flag.String("url", "https://golang.com/", "site to crawl")
-		maxDepth = flag.Int("depth", 3, "maximum depth to crawl upto")
+		baseUrl    = flag.String("url", "https://golang.com/", "site to crawl")
+		maxDepth   = flag.Int("depth", 3, "maximum depth to crawl upto")
+		outputFile = flag.String("output", "out.txt", "file to write the sitemap to")
 	)
 	flag.Parse()
 
 	// create a fetcher and pass it to the crawler
 	fetcher := SimpleFetcher{retries: 3, baseUrl: *baseUrl}
+	start := time.Now()
 	Crawl(*baseUrl, *maxDepth, fetcher)
+	elapsed := time.Since(start)
+	log.Info().Msg(fmt.Sprintf("Crawl took %s\n", elapsed))
 
+	start = time.Now()
 	// pretty print a tree like structure
-	var buffer bytes.Buffer
-	s := collectedUrls.PrettyPrintBuffer(*baseUrl, 0, *maxDepth, buffer)
-	fmt.Println(s.String())
+	s := collectedUrls.PrettyPrintBuffer(*baseUrl, 0, *maxDepth)
+	err := ioutil.WriteFile(*outputFile, []byte(s), 0644)
+	if err != nil {
+		log.Fatal().Err(err).Msgf("could not write sitemap to file")
+	}
 
 	// print fetch stats
-	success, err := urlState.Stats()
-	fmt.Printf("Found %v urls\n", success)
-	fmt.Printf("%v Error(s) in fetch", err)
+	success, errs := urlState.Stats()
+	log.Info().Msgf("Found %v urls", success)
+	log.Info().Msgf("%v Error(s) in fetch", errs)
+	elapsed = time.Since(start)
+	log.Info().Msgf("Pretty print took %s", elapsed)
 
 }
 
-func (collectedUrls *urlCache) PrettyPrintBuffer(baseUrl string, numTabs int, maxDepth int, buffer bytes.Buffer) []bytes.Buffer {
-	fmt.Printf("key %s \n Buffer 1\n %s\n", baseUrl, buffer.String())
-	buffer.WriteString(baseUrl)
-	buffer.WriteString("\n")
-	fmt.Println("Step 1\n", buffer.String())
+func (collectedUrls *urlCache) PrettyPrintBuffer(baseUrl string, numTabs int, maxDepth int) string {
+
 	if numTabs == maxDepth-1 {
-		fmt.Println("ret 1")
-		return buffer
+		return baseUrl
 	}
+
+	var children string
+
 	if nestedUrls, ok := collectedUrls.res[baseUrl]; ok {
 		for _, url := range nestedUrls {
-			//TODO: remove this check, move logic to fetcher
-			fmt.Printf("url %s\n", url)
-			if url != baseUrl {
-				buffer.WriteString(strings.Repeat("\t", numTabs))
-				buffer.WriteString("└──")
-				fmt.Println("buffer arg")
-				fmt.Println(buffer.String())
-				buffer = collectedUrls.PrettyPrintBuffer(url, numTabs+1, maxDepth, buffer)
-				fmt.Println("buffer updated")
-				fmt.Println(buffer.String())
-
-			}
+			nesting := strings.Repeat("\t", numTabs)
+			join := "└──"
+			child := "\n" + nesting + join + collectedUrls.PrettyPrintBuffer(url, numTabs+1, maxDepth)
+			children += child
 		}
 	}
-	return buffer
+	return baseUrl + children
 }
 
 func (urlState *uState) Stats() (int, int) {

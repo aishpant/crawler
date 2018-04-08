@@ -1,29 +1,87 @@
 package main
 
 import (
-	"bytes"
+	"fmt"
+	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
-func benchmarkCrawl(baseUrl string, depth int, b *testing.B) {
+// Fetcher testing inspired from the Web Crawler exercise in the gotour
+// https://tour.golang.org/concurrency/10
+
+func BenchmarkCrawl(b *testing.B) {
+	baseUrl := "https://golang.org"
+	depth := 5
 	fetcher := SimpleFetcher{retries: 3, baseUrl: baseUrl}
 	for i := 0; i < b.N; i++ {
 		Crawl(baseUrl, depth, fetcher)
 	}
 }
 
-func BenchmarkCrawlMonzo3(b *testing.B) { benchmarkCrawl("https://monzo.com", 3, b) }
-func BenchmarkCrawlMonzo4(b *testing.B) { benchmarkCrawl("https://monzo.com", 6, b) }
-func BenchmarkCrawlMonzo5(b *testing.B) { benchmarkCrawl("https://monzo.com", 10, b) }
-func BenchmarkCrawlMonzo6(b *testing.B) { benchmarkCrawl("https://monzo.com", 6, b) }
+// create a fake fetcher
+type fakeFetcher map[string]fakeResult
+type fakeResult []string
 
-/**
-func BenchmarkCrawlGolang3(b *testing.B) { benchmarkCrawl("https://golang.org", 3, b) }
-func BenchmarkCrawlGolang4(b *testing.B) { benchmarkCrawl("https://golang.org", 4, b) }
-func BenchmarkCrawlGolang5(b *testing.B) { benchmarkCrawl("https://golang.org", 5, b) }
-func BenchmarkCrawlGolang6(b *testing.B) { benchmarkCrawl("https://golang.org", 6, b) }
-**/
+var fetcher = fakeFetcher{
+	"u0": fakeResult{"u1", "u2", "u3"},
+	"u1": fakeResult{"u2", "u3"},
+	"u2": fakeResult{"u1", "u3"},
+	"u3": fakeResult{"u1", "u2"},
+}
+
+func (f fakeFetcher) Fetch(url string, client Client) ([]string, error) {
+	if res, ok := f[url]; ok {
+		return res, nil
+	}
+	return nil, fmt.Errorf("not found: %s", url)
+}
+
+// a fake list of fetched url cache
+var fakeCollectedUrls = &urlCache{
+	res: map[string][]string{
+		"u0": {"u1", "u2", "u3"},
+		"u1": {"u2", "u3"},
+		"u2": {"u1", "u3"},
+		"u3": {"u1", "u2"},
+	},
+}
+
 func TestCrawl(t *testing.T) {
+
+	// crawl from baseUrl u0 till depth 3, given a fake fetcher
+	Crawl("u0", 3, fetcher)
+
+	// comparing with a global value 'collectedUrls'; bad
+	assert.Equal(t, fakeCollectedUrls, collectedUrls)
+}
+
+func TestPrettyPrintBuffer(t *testing.T) {
+
+	s1 := fakeCollectedUrls.PrettyPrintBuffer("u0", 0, 1)
+	expected1 := "u0"
+	assert.Equal(t, expected1, s1)
+
+	s2 := fakeCollectedUrls.PrettyPrintBuffer("u0", 0, 2)
+	expected2 :=
+		`u0
+└──u1
+└──u2
+└──u3`
+	assert.Equal(t, expected2, s2)
+
+	s3 := fakeCollectedUrls.PrettyPrintBuffer("u0", 0, 3)
+	expected3 :=
+		`u0
+└──u1
+	└──u2
+	└──u3
+└──u2
+	└──u1
+	└──u3
+└──u3
+	└──u1
+	└──u2`
+	assert.Equal(t, expected3, s3)
 }
 
 func TestStats(t *testing.T) {
@@ -42,35 +100,5 @@ func TestStats(t *testing.T) {
 	if suc != 4 || err != 3 {
 		t.Error("Expected 4 fetches & 3 errors; got ",
 			suc, " fetches & ", err, " errors")
-	}
-}
-
-func TestPrettyPrintBuffer(t *testing.T) {
-	collectedUrls := &urlCache{
-		res: map[string][]string{
-			"u0": {"u1", "u2", "u3"},
-			"u1": {"u2", "u3"},
-			"u2": {"u1", "u3"},
-			"u3": {"u1", "u2"},
-		},
-	}
-	var buffer bytes.Buffer
-
-	s1 := collectedUrls.PrettyPrintBuffer("u0", 0, 1, buffer)
-	expected1 := "u0\n"
-	if s1.String() != expected1 {
-		t.Error("\nExpected\n", expected1,
-			"\nGot\n", s1.String())
-
-	}
-	s2 := collectedUrls.PrettyPrintBuffer("u0", 0, 2, buffer)
-	expected2 :=
-		`u0
-└──u1
-└──u2
-└──u3`
-	if s2.String() != expected2 {
-		t.Error("\nExpected\n", expected2,
-			"\nGot\n", s2.String())
 	}
 }
