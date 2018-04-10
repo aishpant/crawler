@@ -31,8 +31,11 @@ Run `go test` command to run all the tests.
 
 ### Issues
 
-- Does not follow robots.txt
+- Does not follow robots.txt, this crawler could throttle a server with too many
+  connections. Ideally, there should be a delay between requests.
 - Uses a global logger; should be a dependency
-- url cache `collectedUrls` & url state `urlState` are again stored in global variables
+- url cache `collectedUrls` & url state `urlState` are global variables
 - Possibly, one lock could be reduced in `web_crawler.go`
 - Does not print static links.
+- http client should be created once and re-used, it is safe for concurrent use
+- There is no timeout on the client
